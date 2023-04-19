@@ -1,5 +1,4 @@
 import numpy as np
-import threading
 
 class Env:
     """
@@ -23,7 +22,8 @@ class Env:
         and a condition variable for efficient interactions with the two players
         """
         #state variables
-        self.turn = np.random.choice([-1,1])
+        # self.turn = np.random.choice([-1,1])
+        self.turn = -1
         self.state = np.zeros((3,3))
         self.draw = False
 
@@ -32,9 +32,6 @@ class Env:
         self.p1_wins= 0
         self.draws=0
 
-        #condition variable
-        self.cv = threading.Condition()
-
 
 
     def reset(self):
@@ -42,19 +39,21 @@ class Env:
         reset the environment, useful when one wants to play multiple games in a row
         """
         self.draw = False
-        self.turn = np.random.choice([-1,1])
+        # self.turn = np.random.choice([-1,1])
+        self.turn = -1
         self.state = np.zeros((3,3))
         
 
 
     def get_obs(self):
         """
-        returns an array of legal actions and the current state of the game
+        returns an array of legal actions, the current state of the game and a boolean indicating whether the game is finished
         """
         legal = [(i, j) for i in range(self.state.shape[0]) for j in range(self.state.shape[1]) if self.state[i][j] == 0]
-        state = self.state
+        state = np.copy(self.state)
+        isTerminated = self.isTerminated(state, legal)
         
-        return legal, state
+        return legal, state, isTerminated
 
         
 
@@ -81,7 +80,7 @@ class Env:
 
 
 
-    def action(self, move):
+    def step_env(self, move):
         """
         function called by the players interchangeably during the game. 
         It takes a move as an argument and changes the game's state according to the given move.
@@ -89,20 +88,20 @@ class Env:
         """
         reward = 0
 
-        legal, state = self.get_obs()
+        legal, state, isTerminated = self.get_obs()
 
         # check if the game is already finished - don't let the player change the state if that's the case
-        if self.isTerminated(state, legal): 
-        # self.render() #print the end-state of the game
+        if isTerminated: 
+            # self.render() #print the end-state of the game
             if self.draw:
                 reward = 0
             else:
                 reward = -1
         else: # game not finished, let the player change the state
             self.state[move[0]][move[1]] = self.turn
-            legal, state = self.get_obs()
+            legal, state, isTerminated = self.get_obs()
 
-            if self.isTerminated(state, legal):
+            if isTerminated:
                 # self.render() #print the end-state of the game
 
                 if self.draw:
