@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 
 class Random_Player:
     """
@@ -42,6 +43,26 @@ class Random_Player:
             
             if self.last_move == (-1,-1):
                 break
+
+class DummyPlayer:
+    """
+    Implementation of the player who always chooses the first available move (by iterating row by row)
+    """
+    def step_agent(self, mask, isTerminated):
+        if isTerminated:
+            return None
+        else:
+            for i in range(len(mask)):
+                if mask[i]:
+                    return torch.tensor([i])
+                    break
+
+# class manualPlayer:
+#     def step_agent(self, state, isTerminated):
+#         if isTerminated:
+#             return None
+#         else:
+
 
 
 
