@@ -10,6 +10,7 @@ https://pytorch.org/tutorials/intermediate/reinforcement_q_learning.html
 import random
 from collections import namedtuple, deque
 import numpy as np
+import math
 
 
 import torch
@@ -23,7 +24,7 @@ device='cpu'
 
 # The object used for storing the update transitions, represents a tuple containing:
 # current state, action taken, next state and reward obtained for the taken action
-Transition = namedtuple('Transition', ('S', 'A', 'S_p', 'R'))
+Transition = namedtuple('Transition', ('S', 'A', 'S_p', 'R', 'mask'))
 
 
 class ReplayMemory(object):
@@ -53,14 +54,21 @@ class deepQNet(nn.Module):
         self.linear1 = nn.Linear(n_observations, 128)
         self.linear2 = nn.Linear(128,128)
         self.linear3 = nn.Linear(128,128)
-        self.linear4 = nn.Linear(128, n_actions)
+        self.linear4 = nn.Linear(128,128)
+        self.linear5 = nn.Linear(128, n_actions)
+
+        # self.linear1 = nn.Linear(n_observations, 32)
+        # self.linear2 = nn.Linear(32,32)
+        # self.linear3 = nn.Linear(32,32)
+        # self.linear5 = nn.Linear(32, n_actions)
 
 
     def forward(self, x):
         x = F.relu(self.linear1(x))
         x = F.relu(self.linear2(x))
         x = F.relu(self.linear3(x))
-        x = self.linear4(x)
+        x = F.relu(self.linear4(x))
+        x = self.linear5(x)
 
         return x
 
@@ -108,8 +116,9 @@ class DQNAgent():
         self.target_net.load_state_dict(self.behavior_net.state_dict())
 
         self.optimizer = optim.Adam(self.behavior_net.parameters(), lr=opt_lr, amsgrad=True)
+        # self.optimizer = optim.RMSprop(self.behavior_net.parameters(), lr = opt_lr)
         # self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', patience=5000, factor=0.1, verbose=True, min_lr=1e-10)
-        self.scheduler = optim.lr_scheduler.ConstantLR(self.optimizer, factor=0.1, total_iters=8)
+        self.scheduler = optim.lr_scheduler.ConstantLR(self.optimizer, factor=0.1, total_iters=3)
         self.mem = ReplayMemory(50000)
 
         # variable tracking number of actions taken
@@ -141,12 +150,14 @@ class DQNAgent():
         A_p  = None
         legal = [i for i in range(len(mask)) if mask[i]]
         explore = np.random.random()
+        # print(mask.size())
 
         # linear decay of exploration
-        eps = max(self.eps_end, self.eps_start - (self.steps / self.eps_decay) * (self.eps_start - self.eps_end))
+        # eps = max(self.eps_end, self.eps_start - (self.steps / self.eps_decay) * (self.eps_start - self.eps_end))
 
         # exponential decay of exploration
-        # eps = self.eps_end + (self.eps_start - self.eps_end) * math.exp(-1. * self.steps/self.eps_decay)
+        self.eps_start *= self.eps_decay
+        eps = max(self.eps_end, self.eps_start)
         
         # explore
         if explore < eps:
@@ -154,17 +165,13 @@ class DQNAgent():
      
         # exploit: choose the move with the largest Q estimate from the available ones (i.e. filtered with mask)
         else:
+            self.behavior_net.eval()
             with torch.no_grad():
-               action = torch.argmax(self.behavior_net(state)[mask])  
-               j = 0
-               for i in range(len(mask)):
-                   if mask[i]:
-                       if j == action:
-                           A_p = torch.tensor([[i]])
-                           break
-                       else:
-                           j += 1
-        
+                out = self.behavior_net(state)
+                out[mask==False] = -torch.inf
+
+                A_p = torch.argmax(out).view(1,1)
+               
         # increment number of actions taken
         self.steps += 1
 
@@ -179,6 +186,8 @@ class DQNAgent():
         if len(self.mem) < self.batch_size:
             return
         
+        self.behavior_net.train()
+        
         # randomly choose the update batch from the experience replay buffer
         transitions = self.mem.sample(self.batch_size)
 
@@ -191,15 +200,25 @@ class DQNAgent():
         s_batch = torch.cat(batch.S)
         a_batch = torch.cat(batch.A)
         r_batch = torch.cat(batch.R)
+        mask_batch = torch.stack(batch.mask)
+        # print(s_batch.size())
+        # print(r_batch.size())
 
         # the values Q(s,a) for each of the transition tuples, where Q is the policy network
         act_space = self.behavior_net(s_batch).gather(1, a_batch)
 
         next_state_values = torch.zeros(self.batch_size, device=device)
 
+        non_final__masks_mask = mask_batch[non_final_mask]
         # the values max_(a') over Q'(s',*) where Q' is the target network and s' are the next states which are not terminal
         with torch.no_grad():
-            next_state_values[non_final_mask] = torch.max(self.target_net(non_final_next_states),1)[0]
+            target = self.target_net(non_final_next_states)
+            target[non_final__masks_mask==False] = -torch.inf
+
+            next_state_values[non_final_mask] = torch.max(target,1)[0]
+
+
+        # print("ns_values:", next_state_values)
 
         # the new estimates according to the DDQN update
         pred = self.alpha * ((self.gamma * next_state_values) + r_batch)
@@ -210,12 +229,16 @@ class DQNAgent():
         self.losses.append(loss.item())
         self.optimizer.zero_grad()
         loss.backward()
+
+        # for param in self.behavior_net.parameters():
+        #     param.grad.data.clamp_(-1,1)
+
         self.optimizer.step()
 
         # decrease optimizer's learning rate once the loss stagnates
         # self.scheduler.step(loss)
-        if self.steps % 50000 == 0:
-            self.scheduler.step()
+        # if self.steps % 50000 == 0:
+        #     self.scheduler.step()
 
 
         if self.softUpdates:
@@ -229,7 +252,7 @@ class DQNAgent():
         else:
             # hard updates: every tau updates copy all parameters from policy network to target network
             if self.steps % self.tau == 0:
-                print("TRAIN: Cloning the behavior network into target network")
+                # print("TRAIN: Cloning the behavior network into target network")
                 self.target_net.load_state_dict(self.behavior_net.state_dict())
 
 
@@ -258,7 +281,8 @@ class DQNAgent():
                 self.mem.push(torch.unsqueeze(self.curr_state_p0,0), 
                                 A,
                                 S_p if S_p is None else torch.unsqueeze(S_p,0), 
-                                torch.tensor([R],device=device))
+                                torch.tensor([R],device=device),
+                                mask)
             self.curr_state_p0 = S_p
         # perform action for player 1
         else: 
@@ -266,7 +290,8 @@ class DQNAgent():
                 self.mem.push(torch.unsqueeze(self.curr_state_p1,0), 
                                 A,
                                 S_p if S_p is None else torch.unsqueeze(S_p,0), 
-                                torch.tensor([R],device=device))
+                                torch.tensor([R],device=device),
+                                mask)
             self.curr_state_p1 = S_p
 
         self.update_agent()
@@ -286,24 +311,17 @@ class DQNPlayer():
         self.network.eval()
         
 
-    def step_agent(self, A, S_p, R, mask, terminal):
-        if terminal:
-            return None
-        else:
-            # if all actions are available, choose the action uniformly at random
+    def step_agent(self, state, mask, randomFirstMove=False):
+        # if all actions are available, choose the action uniformly at random
+        if randomFirstMove:
             if torch.all(mask):
                 ran = mask.size()[0]
                 return torch.randint(low=0, high=ran, size=(1,1))
-            
-            # otherwise choose the action according to the policy
-            with torch.no_grad():
-               action = torch.argmax(self.network(S_p)[mask])       
-               j = 0
-               for i in range(len(mask)):
-                   if mask[i]:
-                       if j == action:
-                           A_p = torch.tensor([[i]])
-                           break
-                       else:
-                           j += 1
-            return A_p.to(device)
+        
+        # otherwise choose the action according to the policy
+        with torch.no_grad():
+            out = self.network(state)
+            out[mask==False] = -torch.inf
+
+            A_p = torch.argmax(out).view(1,1)
+        return A_p.to(device)
