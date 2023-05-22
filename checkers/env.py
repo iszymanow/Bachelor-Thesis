@@ -35,10 +35,12 @@ class Env:
         self.positions = {}
 
         self.draw = False
+        self.done = False
 
         self.p0_wins= 0
         self.p1_wins= 0
         self.draws = 0
+
 
 
 
@@ -66,26 +68,26 @@ class Env:
         
         # the player whose turn is now is blocked/have no pieces left, they lose
         if not self.get_mask(self.turn).any():
-            # print('mask')
-            return True
+            self.done = True
+            return self.done
         # 3th repetition of the position results in a draw
         key = tuple(self.state.tolist())
         if (self.positions.get(key) is not None) and self.positions[key] >= 3:
             self.draw = True
-            # print('repeated position')
-            return True
+            print('repeated position')
+            self.done=True
         # none of the players capturing any piece during their last 40 moves results in a draw
         elif self.captures0 >= 40 and self.captures1 >= 40:
             self.draw = True
-            # print('40 moves without capture')
-            return True
+            print('40 moves without capture')
+            self.done=True
         # none of the players moving a man piece during their last 40 moves results in a draw
         elif self.man_moves0 >= 40 and self.man_moves1 >= 40:
-            # print('40 moves without man move')
+            print('40 moves without man move')
             self.draw = True
-            return True
-        else:
-            return False
+            self.done = True
+        
+        return self.done
 
 
 
@@ -164,8 +166,8 @@ class Env:
 
         # if it's white's move, flip the mask "upside down", as the fields for them were considered in reverse order
         # (due to flipping the board at the beginning)
-        if player == 1:
-            mask = mask.flip(0) 
+        # if player == 1:
+        #     mask = mask.flip(0) 
         # print(mask)
         return mask
     
@@ -176,6 +178,7 @@ class Env:
         numSquares = torch.tensor([7,14,9,18,-9,-18,-7,-14], device=device, dtype=torch.int8)
         if self.turn == 1:
             numSquares *= (-1)
+            start = 63 - start
         return (start, start+numSquares[move])
        
 
@@ -237,6 +240,8 @@ class Env:
                     self.captures1 += 1
 
             state, mask, done = self.get_obs()
+            if self.turn == 1 and capture:
+                end = 63 - end
             
             state = tuple(state.tolist())
             if self.positions.get(state) is None:
@@ -245,13 +250,16 @@ class Env:
                 self.positions[state] += 1
 
     
-            self.turn *= (-1)
+            print((not promotion), capture, (mask[end][1] or mask[end][3] or mask[end][5] or mask[end][7]))
             # if a player captured a piece, didn't promote to the king and still has captures available,
             # make sure that the same player gets another move
             if (not promotion) and capture and (mask[end][1] or mask[end][3] or mask[end][5] or mask[end][7]):
+                print('must capture again')
                 self.turn *= (-1)
                 self.captureFlag = end
             else:
+                # need to temporarily change the turn indicator, s.t. the termination is checked from the opponent's perspective
+                self.turn *= (-1)
                 if self.isTerminated():
                     if self.draw:
                         reward = 0
@@ -262,6 +270,10 @@ class Env:
                             self.p1_wins += 1
                         else:
                             self.p0_wins += 1
+                # revert the proper turn indicator
+                self.turn *= (-1)
+
+        self.turn *= (-1)
 
         return reward
 
@@ -276,7 +288,7 @@ class Env:
             state = state.flip(0)
         else:
             state = self.flip_board(state).flip(0)
-            mask = mask.flip(0)
+            # mask = mask.flip(0)
         board = "\n+---+---+---+---+---+---+---+---+\n"
         for row in state:
             board += '|'
