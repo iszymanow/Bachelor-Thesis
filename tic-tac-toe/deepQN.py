@@ -11,6 +11,7 @@ import random
 from collections import namedtuple, deque
 import numpy as np
 import math
+import queue
 
 
 import torch
@@ -37,7 +38,6 @@ class ReplayMemory(object):
     """
     def __init__(self, capacity=10000):
         self.memory = deque([], maxlen=capacity)
-
     def push(self, *args):
         self.memory.append(Transition(*args))
 
@@ -55,14 +55,18 @@ class deepQNet(nn.Module):
     """
     def __init__(self, n_observations, n_actions):
         super(deepQNet, self).__init__()
-        self.linear1 = nn.Linear(n_observations, 512)
-        self.linear2 = nn.Linear(512,512)
-        self.linear5 = nn.Linear(512, n_actions)
+        self.linear1 = nn.Linear(n_observations, 1024)
+        self.linear2 = nn.Linear(1024,1024)
+        self.linear3 = nn.Linear(1024,1024)
+        self.linear4 = nn.Linear(1024,1024)
+        self.linear5 = nn.Linear(1024, n_actions)
 
 
     def forward(self, x):
         x = F.relu(self.linear1(x))
         x = F.relu(self.linear2(x))
+        x = F.relu(self.linear3(x))
+        x = F.relu(self.linear4(x))
         x = self.linear5(x)
 
         return x
@@ -112,7 +116,7 @@ class DQNAgent():
         self.target_net.load_state_dict(self.behavior_net.state_dict())
 
         self.optimizer = optim.Adam(self.behavior_net.parameters(), lr=opt_lr, amsgrad=True)
-        self.mem = ReplayMemory(50000)
+        self.mem = ReplayMemory(10000)
 
         # variable tracking number of actions taken
         self.steps = 0
@@ -144,17 +148,17 @@ class DQNAgent():
 
 
         # linear decay of exploration
-        # eps = max(self.eps_end, self.eps_start - (self.steps / self.eps_decay) * (self.eps_start - self.eps_end))
+        eps = max(self.eps_end, self.eps_start - (self.steps / self.eps_decay) * (self.eps_start - self.eps_end))
 
         # exponential decay of exploration
-        self.eps_start *= self.eps_decay
-        eps = max(self.eps_end, self.eps_start)
+        # self.eps_start *= self.eps_decay
+        # eps = max(self.eps_end, self.eps_start)
         
 
         explore = np.random.random()
         # explore
         if explore < eps:
-            legal = torch.tensor(range(len(mask)),device=device)[mask]
+            legal = torch.tensor(range(len(mask)), dtype=torch.int64, device=device)[mask]
             idx = torch.randint(high=len(legal),size=(1,))
             A_p = legal[idx].view(1,1)
      
@@ -163,11 +167,10 @@ class DQNAgent():
             self.behavior_net.eval()
             with torch.no_grad():
                 out = torch.masked.as_masked_tensor(self.behavior_net(state),mask)
-                A_p = torch.masked.argmax(out, dtype=torch.int).view(1,1)
+                A_p = torch.masked.argmax(out, dtype=torch.int64).view(1,1)
 
                
-        # increment number of actions taken
-        self.steps += 1
+
 
         return A_p
     
@@ -221,6 +224,11 @@ class DQNAgent():
         criterion = nn.SmoothL1Loss()
         loss = criterion(act_space, pred.unsqueeze(1))    
         self.losses.append(loss.item())
+        # print(len(self.losses))
+
+        # increment number of optimization steps (self.steps == len(losses))
+        self.steps = len(self.losses)
+
         self.optimizer.zero_grad()
         loss.backward()
 
@@ -277,17 +285,7 @@ class DQNAgent():
                             torch.tensor([R],device=device),
                             torch.tensor([terminal],device=device),
                             mask)
-        # self.curr_state_p0 = S_p
-        # perform action for player 1
-        # else: 
-        #     if self.curr_state_p1 is not None:
-        #         self.mem.push(torch.unsqueeze(self.curr_state_p1,0), 
-        #                         A.to(device),
-        #                         S_p if S_p is None else torch.unsqueeze(S_p,0), 
-        #                         torch.tensor([R],device=device),
-        #                         torch.tensor([terminal],device=device),
-        #                         mask)
-        #     self.curr_state_p1 = S_p
+
 
         self.update_agent()
 

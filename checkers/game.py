@@ -8,6 +8,7 @@ from tqdm import tqdm
 from sklearn.preprocessing import OneHotEncoder
 import multiprocessing, concurrent.futures
 import torch.multiprocessing as mp
+from collections import deque
 
 #pc:
 sys.path.append('/home/igor/Bachelor-Thesis/tic-tac-toe/')
@@ -30,174 +31,188 @@ def encodeObs(state, repetitions, nonprogress, turn):
 
     return torch.tensor(encoded, dtype=torch.float).flatten()
 
-def play(agent, game_inst, numEpisodes):
+def play(agent, game_inst, numEpisodes, numGames):
+
+    randPlayer = player0.RandomPlayer()
     for i in tqdm(range(1,numEpisodes + 1)):
             # reset the state variables of the previous game before the next starts 
-            game_inst.reset()
-            curr_state_p0 = None
-            curr_state_p1 = None
-            R=0
-            R_2=0
-            A_p=None
-            A_2p=None
+        game_inst.reset()
+        curr_state_p0 = None
+        curr_state_p1 = None
+        R=0
+        R_2=0
+        A_p=None
+        A_2p=None
 
-            # the main episode loop
-            while True:
-                    S_prime, mask, isTerminated, repetitions, nonprogress = game_inst.get_obs()
-                    mask = mask.flatten()
+        # the main episode loop
+        while True:
+                S_prime, mask, isTerminated, repetitions, nonprogress = game_inst.get_obs()
+                mask = mask.flatten()
 
-                    if isTerminated:
-                        R,R_2 = game_inst.step_env(None)
-                        agent.step_agent(curr_state_p0, A_p, torch.zeros([64*5]), R, mask, isTerminated, -1)
-                        agent.step_agent(curr_state_p1, A_2p, torch.zeros([64*5]), R_2, mask, isTerminated, 1)                       
-                        break
+                if isTerminated:
+                    R,R_2 = game_inst.step_env(None)
+                    agent.step_agent(curr_state_p0, A_p, torch.zeros([64*5]), R, mask, isTerminated, -1)
+                    agent.step_agent(curr_state_p1, A_2p, torch.zeros([64*5]), R_2, mask, isTerminated, 1)                       
+                    break
 
-                    S_prime = encodeObs(S_prime, repetitions, nonprogress, game_inst.turn)
-                    
-                    if game_inst.turn == -1:
-                        A_p = agent.step_agent(curr_state_p0, A_p, S_prime, R, mask, isTerminated, -1)
-                        curr_state_p0 = S_prime.clone()
-                        # environment step
-                        R,R_2 = game_inst.step_env(A_p.to(device))
+                S_prime = encodeObs(S_prime, repetitions, nonprogress, game_inst.turn)
+                
+                if game_inst.turn == -1:
+                    A_p = agent.step_agent(curr_state_p0, A_p, S_prime, R, mask, isTerminated, -1)
+                    curr_state_p0 = S_prime.clone()
+                    # environment step
+                    R,R_2 = game_inst.step_env(A_p.to(device))
 
-                    else:
-                        A_2p = agent.step_agent(curr_state_p1,A_2p, S_prime, R_2, mask, isTerminated, 1)
-                        curr_state_p1 = S_prime.clone()
-                        #environment step
-                        R,R_2 = game_inst.step_env(A_2p.to(device))
-    
-    return game_inst.p0_wins, game_inst.draws, game_inst.p1_wins
+                else:
+                    A_2p = agent.step_agent(curr_state_p1,A_2p, S_prime, R_2, mask, isTerminated, 1)
+                    curr_state_p1 = S_prime.clone()
+                    #environment step
+                    R,R_2 = game_inst.step_env(A_2p.to(device))
+        
+        with numGames.get_lock():
+                numGames.value += 1
+        
 
-def trainDistributed(eval_frequency, numEpisodes, weights_path='', loss_plots_path='', result_plots_path=''):
+def trainDistributed(eval_frequency, numEpisodes, num_workers, weights_path='', loss_plots_path='', result_plots_path=''):
     agent = deepQN.DQNAgent(in_obs=64*5, 
                     out_actions=512, 
                     alpha=1, 
                     gamma=0.999, 
                     eps_start=1, 
                     eps_end = 0.1, 
-                    eps_decay=0.9999, 
-                    opt_lr=5e-4, 
+                    eps_decay=25000, 
+                    opt_lr=1e-4, 
                     batch_size=256, 
                     tau=5e-6,
                     softUpdates=True)
     
-    mp_agent = agent.share_memory()
+    weights = torch.load('distrRun/DQNAgent_3_hidden_layers.pt')
+    agent.behavior_net.load_state_dict(weights)
+    agent.target_net.load_state_dict(weights)
+
+    
     randomS_p0_wins, randomS_draws, randomS_p1_wins = [],[],[]
     randomNS_p0_wins, randomNS_draws, randomNS_p1_wins = [],[],[]
     selfplay_p0_wins, selfplay_draws, selfplay_p1_wins = [],[],[]
     
     if __name__ == '__main__':
-
-        
-
         mp.set_start_method('spawn')
-        game_insts = [env.Env() for i in range(10)]
-        eval_rounds = numEpisodes//eval_frequency
+        agent.behavior_net.share_memory()
+        agent.target_net.share_memory()
+        agent.losses = mp.Manager().list(agent.losses)
 
-        for i in range(eval_rounds):
-            work = [mp.Process(target=play, args=(mp_agent, game_inst, eval_frequency//10,)) for game_inst in game_insts]
-            for p in work:
-                p.start()
-            
-            for p in work:
-                p.join()
+        game_insts = [env.Env() for i in range(num_workers)]
+        num_games = mp.Value('i', 0)
 
-            # loss progression
-            plt.figure(figsize=(10,5))
-            plt.plot(agent.losses)
-            plt.title("Agent's loss progression")
-            plt.xlabel('Number of optimization steps')
-            plt.ylabel("loss value")
-            plt.savefig(loss_plots_path + "/losses_after_" + str(eval_frequency *(i + 1)) + "_iters")
-            plt.close()
+        work = [mp.Process(target=play, args=(agent, game_insts[i], numEpisodes//num_workers, num_games,)) for i in range(len(game_insts))]
+        for p in work:
+            p.start()
 
-            # target network evaluation
-            x_axis = [str(x) for x in range(eval_frequency, (i+1)*eval_frequency+1, eval_frequency)]
-            sp_p0, sp_d, sp_p1 = testSelfPlay(agent.target_net.state_dict(), 64*5, 512, numEpisodes=10)
-            randS_p0, randS_d, randS_p1 = testRandomPlay(agent.target_net.state_dict(), randomStarts=True, numEpisodes=10)
-            randNS_p0, randNS_d,randNS_p1 = testRandomPlay(agent.target_net.state_dict(), randomStarts=False, numEpisodes=10)
+        i = 0
+        while True:
+            with num_games.get_lock():
+                if num_games.value == (i+1) * eval_frequency:
 
-            selfplay_p0_wins.append(sp_p0)
-            selfplay_draws.append(sp_d)
-            selfplay_p1_wins.append(sp_p1)
+                    # loss progression
+                    plt.figure(figsize=(10,5))
+                    plt.plot(agent.losses)
+                    plt.title("Agent's loss progression")
+                    plt.xlabel('Number of optimization steps')
+                    plt.ylabel("loss value")
+                    plt.savefig(loss_plots_path + "/losses_after_" + str(eval_frequency *(i + 1)) + "_iters")
+                    plt.close()
 
-            randomS_p0_wins.append(randS_p0)
-            randomS_draws.append(randS_d)
-            randomS_p1_wins.append(randS_p1)
+                    # target network evaluation
+                    x_axis = [str(x//1000) for x in range(eval_frequency, (i+1)*eval_frequency+1, eval_frequency)]
+                    sp_p0, sp_d, sp_p1 = testSelfPlay(agent.target_net.state_dict(), 64*5, 512, numEpisodes=1000)
+                    randS_p0, randS_d, randS_p1 = testRandomPlay(agent.target_net.state_dict(), randomStarts=True, numEpisodes=1000)
+                    randNS_p0, randNS_d,randNS_p1 = testRandomPlay(agent.target_net.state_dict(), randomStarts=False, numEpisodes=1000)
 
-            randomNS_p0_wins.append(randNS_p0)
-            randomNS_draws.append(randNS_d)
-            randomNS_p1_wins.append(randNS_p1)
-            # lines/markers plots
-            # plt.figure(figsize=(20,5))
-            # plt.subplot(1,3,1)
-            # plt.plot(x_axis, selfplay_p0_wins, label='p0 wins', marker='.')
-            # plt.plot(x_axis, selfplay_draws, label='draws', marker='*')
-            # plt.plot(x_axis, selfplay_p1_wins, label='p1 wins', marker='d')
-            # plt.legend()
-            # plt.xlabel("number of training games played")
-            # plt.ylabel("number of games with particular outcome during eval. run")
-            # plt.title("Self-play results (First move random with p=0.5)")
+                    selfplay_p0_wins.append(sp_p0)
+                    selfplay_draws.append(sp_d)
+                    selfplay_p1_wins.append(sp_p1)
 
-            # plt.subplot(1,3,2)
-            # plt.plot(x_axis, randomS_p0_wins, label='p0 wins', marker='.')
-            # plt.plot(x_axis, randomS_draws, label='draws', marker='*')
-            # plt.plot(x_axis, randomS_p1_wins, label='p1 wins', marker='d')
-            # plt.legend()
-            # plt.xlabel("number of training games played")
-            # plt.ylabel("number of games with particular outcome during eval. run")
-            # plt.title("Results against a random player that plays as first (rand = p0)")
+                    randomS_p0_wins.append(randS_p0)
+                    randomS_draws.append(randS_d)
+                    randomS_p1_wins.append(randS_p1)
 
-            # plt.subplot(1,3,3)
-            # plt.plot(x_axis, randomNS_p0_wins, label='p0 wins', marker='.')
-            # plt.plot(x_axis, randomNS_draws, label='draws', marker='*')
-            # plt.plot(x_axis, randomNS_p1_wins, label='p1 wins', marker='d')
-            # plt.legend()
-            # plt.xlabel("number of training games played")
-            # plt.ylabel("number of games with particular outcome during eval. run")
-            # plt.title("Results against a random player that plays as second (rand = p1)")
+                    randomNS_p0_wins.append(randNS_p0)
+                    randomNS_draws.append(randNS_d)
+                    randomNS_p1_wins.append(randNS_p1)
+                    # lines/markers plots
+                    plt.figure(figsize=(20,5))
+                    plt.subplot(1,3,1)
+                    plt.plot(x_axis, selfplay_p0_wins, label='p0 wins', marker='.')
+                    plt.plot(x_axis, selfplay_draws, label='draws', marker='*')
+                    plt.plot(x_axis, selfplay_p1_wins, label='p1 wins', marker='d')
+                    plt.legend()
+                    plt.xlabel("number of training games played in thousands")
+                    plt.ylabel("number of games with particular outcome during eval. run")
+                    plt.title("Self-play results (First move random with p=0.5)")
 
-            # plt.savefig(result_plots_path + "/results_after_" + str(i) + "_iters")
-            # plt.close()
+                    plt.subplot(1,3,2)
+                    plt.plot(x_axis, randomS_p0_wins, label='p0 wins', marker='.')
+                    plt.plot(x_axis, randomS_draws, label='draws', marker='*')
+                    plt.plot(x_axis, randomS_p1_wins, label='p1 wins', marker='d')
+                    plt.legend()
+                    plt.xlabel("number of training games played in thousands")
+                    plt.ylabel("number of games with particular outcome during eval. run")
+                    plt.title("Results against a random player that plays as first (rand = p0)")
 
-            # stacked bar charts
-            plt.figure(figsize=(20,5)).tight_layout()
-            plt.subplot(1,3,1)
-            plt.bar(x_axis, selfplay_p0_wins, label='p0 wins')
-            plt.bar(x_axis, selfplay_draws, label='draws', bottom=selfplay_p0_wins)
-            plt.bar(x_axis, selfplay_p1_wins, label='p1 wins', bottom=np.add(selfplay_p0_wins, selfplay_draws))
-            plt.legend()
-            plt.xlabel("number of training games played")
-            plt.ylabel("number of games with particular outcome during eval. run")
-            plt.title("Self-play results (First move random with p=0.5)")
+                    plt.subplot(1,3,3)
+                    plt.plot(x_axis, randomNS_p0_wins, label='p0 wins', marker='.')
+                    plt.plot(x_axis, randomNS_draws, label='draws', marker='*')
+                    plt.plot(x_axis, randomNS_p1_wins, label='p1 wins', marker='d')
+                    plt.legend()
+                    plt.xlabel("number of training games played in thousands")
+                    plt.ylabel("number of games with particular outcome during eval. run")
+                    plt.title("Results against a random player that plays as second (rand = p1)")
 
-            plt.subplot(1,3,2)
-            plt.bar(x_axis, randomS_p0_wins, label='rand. player\'s wins')
-            plt.bar(x_axis, randomS_draws, label='draws', bottom=randomS_p0_wins)
-            plt.bar(x_axis, randomS_p1_wins, label='agent\'s wins', bottom=np.add(randomS_p0_wins, randomS_draws))
-            plt.legend()
-            plt.xlabel("number of training games played")
-            plt.ylabel("number of games with particular outcome during eval. run")
-            plt.title("Results against a random player that plays as first")
+                    plt.savefig(result_plots_path + "/results_after_" + str((i+1)*eval_frequency) + "_iters")
+                    plt.close()
 
-            plt.subplot(1,3,3)
-            plt.bar(x_axis, randomNS_p0_wins, label='agent\'s wins')
-            plt.bar(x_axis, randomNS_draws, label='draws', bottom=randomNS_p0_wins)
-            plt.bar(x_axis, randomNS_p1_wins, label='rand. player\'s wins',  bottom=np.add(randomNS_p0_wins, randomNS_draws))
-            plt.legend()
-            plt.xlabel("number of training games played")
-            plt.ylabel("number of games with particular outcome during eval. run")
-            plt.title("Results against a random player that plays as second")
+                    # stacked bar charts
+                    # plt.figure(figsize=(20,5)).tight_layout()
+                    # plt.subplot(1,3,1)
+                    # plt.bar(x_axis, selfplay_p0_wins, label='p0 wins')
+                    # plt.bar(x_axis, selfplay_draws, label='draws', bottom=selfplay_p0_wins)
+                    # plt.bar(x_axis, selfplay_p1_wins, label='p1 wins', bottom=np.add(selfplay_p0_wins, selfplay_draws))
+                    # plt.legend()
+                    # plt.xlabel("number of training games played in thousands")
+                    # plt.ylabel("number of games with particular outcome during eval. run")
+                    # plt.title("Self-play results (First move random with p=0.5)")
 
-            plt.savefig(result_plots_path + "/results_after_" + str((i+1)*eval_frequency) + "_iters")
-            plt.close()
+                    # plt.subplot(1,3,2)
+                    # plt.bar(x_axis, randomS_p0_wins, label='rand. player\'s wins')
+                    # plt.bar(x_axis, randomS_draws, label='draws', bottom=randomS_p0_wins)
+                    # plt.bar(x_axis, randomS_p1_wins, label='agent\'s wins', bottom=np.add(randomS_p0_wins, randomS_draws))
+                    # plt.legend()
+                    # plt.xlabel("number of training games played in thousands")
+                    # plt.ylabel("number of games with particular outcome during eval. run")
+                    # plt.title("Results against a random player that plays as first")
 
-            # store the current version of the target network weights
-            if i % (10 * eval_frequency):
+                    # plt.subplot(1,3,3)
+                    # plt.bar(x_axis, randomNS_p0_wins, label='agent\'s wins')
+                    # plt.bar(x_axis, randomNS_draws, label='draws', bottom=randomNS_p0_wins)
+                    # plt.bar(x_axis, randomNS_p1_wins, label='rand. player\'s wins',  bottom=np.add(randomNS_p0_wins, randomNS_draws))
+                    # plt.legend()
+                    # plt.xlabel("number of training games played in thousands")
+                    # plt.ylabel("number of games with particular outcome during eval. run")
+                    # plt.title("Results against a random player that plays as second")
+
+                    # plt.savefig(result_plots_path + "/results_after_" + str((i+1)*eval_frequency) + "_iters")
+                    # plt.close()
+
+                    # store the current version of the target network weights
                     torch.save(agent.target_net.state_dict(), weights_path + '/DQNAgent.pt')
 
+                    i += 1
+            if (i + 1) * eval_frequency > numEpisodes:
+                break
+        for p in work:
+            p.join()
 
-        torch.save(agent.target_net.state_dict(), weights_path + '/DQNAgent.pt')
+        torch.save(agent.target_net.state_dict(), weights_path + '/DQNAgent_150k_3_hidden_layers.pt')
         print("TRAIN: Training finished, the target weights have been saved at " + weights_path + ".")
 
 def trainDeepQN(eval_frequency, numEpisodes, weights_path='', loss_plots_path='', result_plots_path=''):
@@ -233,17 +248,17 @@ def trainDeepQN(eval_frequency, numEpisodes, weights_path='', loss_plots_path=''
                         out_actions=512, 
                         alpha=1, 
                         gamma=0.999, 
-                        eps_start=1, 
-                        eps_end = 0.1, 
+                        eps_start=0.2, 
+                        eps_end = 0.01, 
                         eps_decay=0.9999, 
                         opt_lr=5e-4, 
                         batch_size=256, 
                         tau=5e-6,
                         softUpdates=True)
     
-    # weights = torch.load('testRun/DQNAgent30k.pt')
-    # p0.behavior_net.load_state_dict(weights)
-    # p0.target_net.load_state_dict(weights)
+    weights = torch.load('testRun/DQNAgent200k.pt')
+    p0.behavior_net.load_state_dict(weights)
+    p0.target_net.load_state_dict(weights)
     
 
     # variables and lists responsible for benchmarking
@@ -342,11 +357,11 @@ def trainDeepQN(eval_frequency, numEpisodes, weights_path='', loss_plots_path=''
                     plt.title("Agent's loss progression")
                     plt.xlabel('Number of optimization steps')
                     plt.ylabel("loss value")
-                    plt.savefig(loss_plots_path + "/losses_after_" + str(i) + "_iters")
+                    plt.savefig(loss_plots_path + "/losses_after_" + str(200000+i) + "_iters")
                     plt.close()
 
                     # target network evaluation
-                    x_axis = [str(x) for x in range(5 * eval_frequency, i+1, 5 * eval_frequency)]
+                    x_axis = [str(200000+x) for x in range(5 * eval_frequency, i+1, 5 * eval_frequency)]
                     sp_p0, sp_d, sp_p1 = testSelfPlay(p0.target_net.state_dict(), 64*5, 512, numEpisodes=1000)
                     randS_p0, randS_d, randS_p1 = testRandomPlay(p0.target_net.state_dict(), randomStarts=True, numEpisodes=1000)
                     randNS_p0, randNS_d,randNS_p1 = testRandomPlay(p0.target_net.state_dict(), randomStarts=False, numEpisodes=1000)
@@ -364,77 +379,76 @@ def trainDeepQN(eval_frequency, numEpisodes, weights_path='', loss_plots_path=''
                     randomNS_p1_wins.append(randNS_p1)
 
                     # lines/markers plots
-                    # plt.figure(figsize=(20,5))
-                    # plt.subplot(1,3,1)
-                    # plt.plot(x_axis, selfplay_p0_wins, label='p0 wins', marker='.')
-                    # plt.plot(x_axis, selfplay_draws, label='draws', marker='*')
-                    # plt.plot(x_axis, selfplay_p1_wins, label='p1 wins', marker='d')
-                    # plt.legend()
-                    # plt.xlabel("number of training games played")
-                    # plt.ylabel("number of games with particular outcome during eval. run")
-                    # plt.title("Self-play results (First move random with p=0.5)")
-
-                    # plt.subplot(1,3,2)
-                    # plt.plot(x_axis, randomS_p0_wins, label='p0 wins', marker='.')
-                    # plt.plot(x_axis, randomS_draws, label='draws', marker='*')
-                    # plt.plot(x_axis, randomS_p1_wins, label='p1 wins', marker='d')
-                    # plt.legend()
-                    # plt.xlabel("number of training games played")
-                    # plt.ylabel("number of games with particular outcome during eval. run")
-                    # plt.title("Results against a random player that plays as first (rand = p0)")
-
-                    # plt.subplot(1,3,3)
-                    # plt.plot(x_axis, randomNS_p0_wins, label='p0 wins', marker='.')
-                    # plt.plot(x_axis, randomNS_draws, label='draws', marker='*')
-                    # plt.plot(x_axis, randomNS_p1_wins, label='p1 wins', marker='d')
-                    # plt.legend()
-                    # plt.xlabel("number of training games played")
-                    # plt.ylabel("number of games with particular outcome during eval. run")
-                    # plt.title("Results against a random player that plays as second (rand = p1)")
-
-                    # plt.savefig(result_plots_path + "/results_after_" + str(i) + "_iters")
-                    # plt.close()
-
-                    # stacked bar charts
-                    plt.figure(figsize=(20,5)).tight_layout()
+                    plt.figure(figsize=(20,5))
                     plt.subplot(1,3,1)
-                    plt.bar(x_axis, selfplay_p0_wins, label='p0 wins')
-                    plt.bar(x_axis, selfplay_draws, label='draws', bottom=selfplay_p0_wins)
-                    plt.bar(x_axis, selfplay_p1_wins, label='p1 wins', bottom=np.add(selfplay_p0_wins, selfplay_draws))
+                    plt.plot(x_axis, selfplay_p0_wins, label='p0 wins', marker='.')
+                    plt.plot(x_axis, selfplay_draws, label='draws', marker='*')
+                    plt.plot(x_axis, selfplay_p1_wins, label='p1 wins', marker='d')
                     plt.legend()
                     plt.xlabel("number of training games played")
                     plt.ylabel("number of games with particular outcome during eval. run")
                     plt.title("Self-play results (First move random with p=0.5)")
 
                     plt.subplot(1,3,2)
-                    plt.bar(x_axis, randomS_p0_wins, label='rand. player\'s wins')
-                    plt.bar(x_axis, randomS_draws, label='draws', bottom=randomS_p0_wins)
-                    plt.bar(x_axis, randomS_p1_wins, label='agent\'s wins', bottom=np.add(randomS_p0_wins, randomS_draws))
+                    plt.plot(x_axis, randomS_p0_wins, label='p0 wins', marker='.')
+                    plt.plot(x_axis, randomS_draws, label='draws', marker='*')
+                    plt.plot(x_axis, randomS_p1_wins, label='p1 wins', marker='d')
                     plt.legend()
                     plt.xlabel("number of training games played")
                     plt.ylabel("number of games with particular outcome during eval. run")
-                    plt.title("Results against a random player that plays as first")
+                    plt.title("Results against a random player that plays as first (rand = p0)")
 
                     plt.subplot(1,3,3)
-                    plt.bar(x_axis, randomNS_p0_wins, label='agent\'s wins')
-                    plt.bar(x_axis, randomNS_draws, label='draws', bottom=randomNS_p0_wins)
-                    plt.bar(x_axis, randomNS_p1_wins, label='rand. player\'s wins',  bottom=np.add(randomNS_p0_wins, randomNS_draws))
+                    plt.plot(x_axis, randomNS_p0_wins, label='p0 wins', marker='.')
+                    plt.plot(x_axis, randomNS_draws, label='draws', marker='*')
+                    plt.plot(x_axis, randomNS_p1_wins, label='p1 wins', marker='d')
                     plt.legend()
                     plt.xlabel("number of training games played")
                     plt.ylabel("number of games with particular outcome during eval. run")
-                    plt.title("Results against a random player that plays as second")
+                    plt.title("Results against a random player that plays as second (rand = p1)")
 
-                    plt.savefig(result_plots_path + "/results_after_" + str(i) + "_iters")
+                    plt.savefig(result_plots_path + "/results_after_" + str(200000+i) + "_iters")
                     plt.close()
 
+                    # # stacked bar charts
+                    # plt.figure(figsize=(20,5)).tight_layout()
+                    # plt.subplot(1,3,1)
+                    # plt.bar(x_axis, selfplay_p0_wins, label='p0 wins')
+                    # plt.bar(x_axis, selfplay_draws, label='draws', bottom=selfplay_p0_wins)
+                    # plt.bar(x_axis, selfplay_p1_wins, label='p1 wins', bottom=np.add(selfplay_p0_wins, selfplay_draws))
+                    # plt.legend()
+                    # plt.xlabel("number of training games played")
+                    # plt.ylabel("number of games with particular outcome during eval. run")
+                    # plt.title("Self-play results (First move random with p=0.5)")
+
+                    # plt.subplot(1,3,2)
+                    # plt.bar(x_axis, randomS_p0_wins, label='rand. player\'s wins')
+                    # plt.bar(x_axis, randomS_draws, label='draws', bottom=randomS_p0_wins)
+                    # plt.bar(x_axis, randomS_p1_wins, label='agent\'s wins', bottom=np.add(randomS_p0_wins, randomS_draws))
+                    # plt.legend()
+                    # plt.xlabel("number of training games played")
+                    # plt.ylabel("number of games with particular outcome during eval. run")
+                    # plt.title("Results against a random player that plays as first")
+
+                    # plt.subplot(1,3,3)
+                    # plt.bar(x_axis, randomNS_p0_wins, label='agent\'s wins')
+                    # plt.bar(x_axis, randomNS_draws, label='draws', bottom=randomNS_p0_wins)
+                    # plt.bar(x_axis, randomNS_p1_wins, label='rand. player\'s wins',  bottom=np.add(randomNS_p0_wins, randomNS_draws))
+                    # plt.legend()
+                    # plt.xlabel("number of training games played")
+                    # plt.ylabel("number of games with particular outcome during eval. run")
+                    # plt.title("Results against a random player that plays as second")
+
+                    # plt.savefig(result_plots_path + "/results_after_" + str(200000+i) + "_iters")
+                    # plt.close()
+
             # store the current version of the target network weights
-            if i % (10 * eval_frequency):
+            if i % (10 * eval_frequency) == 0:
                     torch.save(p0.target_net.state_dict(), weights_path + '/DQNAgent.pt')
 
 
-    torch.save(p0.target_net.state_dict(), weights_path + '/DQNAgent.pt')
+    torch.save(p0.target_net.state_dict(), weights_path + '/DQNAgent200k.pt')
     print("TRAIN: Training finished, the target weights have been saved at " + weights_path + ".")
-    
 
 def testSelfPlay(net, in_obs, out_actions, numEpisodes=1000):
     """
@@ -477,6 +491,7 @@ def testSelfPlay(net, in_obs, out_actions, numEpisodes=1000):
                 else:
                     A_2p = player.step_agent(S_prime, mask)
                     game_inst.step_env(A_2p.to(device))
+
 
 
     print("EVAL (selfplay): player0 wins: " + str(game_inst.p0_wins), "player1 wins: " + str(game_inst.p1_wins), "draws: " + str(game_inst.draws))
@@ -620,23 +635,24 @@ def manualTestPlay(model):
 
 
 def main():
-    trainDeepQN(eval_frequency=1000,
-                numEpisodes=30000,
-                weights_path='testRun',
-                loss_plots_path='testRun/losses',
-                result_plots_path='testRun/results')
+    # trainDeepQN(eval_frequency=1000,
+    #             numEpisodes=100000,
+    #             weights_path='testRun',
+    #             loss_plots_path='testRun/losses',
+    #             result_plots_path='testRun/results')
     
-    # weights = torch.load('testRun/DQNAgent10k.pt')
+    # weights = torch.load('distrRun/DQNAgent_3_hidden_layers.pt')
     # testRandomPlay(weights, False, 1000)
     # testRandomPlay(weights, True, 1000)
     # testSelfPlay(weights, 64*5, 512, 1000)
     # manualTestPlay(weights)
 
-    # trainDistributed(eval_frequency=3000,
-    #             numEpisodes=30000,
-    #             weights_path='testRun',
-    #             loss_plots_path='testRun/losses',
-    #             result_plots_path='testRun/results')
+    trainDistributed(eval_frequency=5000,
+                numEpisodes=50000,
+                num_workers=2,
+                weights_path='distrRun',
+                loss_plots_path='distrRun/losses',
+                result_plots_path='distrRun/results')
 
 
 
