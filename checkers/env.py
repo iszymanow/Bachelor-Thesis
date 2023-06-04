@@ -35,11 +35,35 @@ class Env:
         self.positions = {tuple(self.state.tolist()): 1}
 
         self.draw = False
-        self.done = False
+        self.done = 3
 
         self.p0_wins= 0
         self.p1_wins= 0
         self.draws = 0
+
+    def save(self):
+        return (self.state.clone(),
+                self.turn,
+                self.captureFlag,
+                self.nonprogress,
+                self.positions.copy(),
+                self.draw,
+                self.done,
+                self.p0_wins,
+                self.p1_wins,
+                self.draws)
+
+    def load(self, paramTuple):
+        self.state = paramTuple[0]
+        self.turn = paramTuple[1]
+        self.captureFlag = paramTuple[2]
+        self.nonprogress = paramTuple[3]
+        self.positions = paramTuple[4]
+        self.draw = paramTuple[5]
+        self.done = paramTuple[6]
+        self.p0_wins = paramTuple[7]
+        self.p1_wins = paramTuple[8]
+        self.draws = paramTuple[9]
 
     def reset(self):
         curr_p0_wins = self.p0_wins
@@ -51,7 +75,12 @@ class Env:
         self.p1_wins = curr_p1_wins
         self.draws = curr_draws
 
-
+    def getBoard(self):
+        state = self.state.clone()
+        if self.turn == 1:
+            state = state.flip(0)
+        return state
+    
     def get_obs(self, needMask=True):
         state = self.state.clone()
         repetitions = self.positions[tuple(state.tolist())]
@@ -59,7 +88,7 @@ class Env:
         if self.turn == 1:
             state = state.flip(0)
         mask = self.get_mask(self.turn)
-        done = self.isTerminated(mask) if not self.done else True
+        done = self.isTerminated(mask) if self.done != 3 else True
 
         return state, mask, done, repetitions, non_p
 
@@ -68,7 +97,7 @@ class Env:
         
         # the player whose turn is now is blocked/have no pieces left, they lose
         if not mask.any():
-            self.done = True
+            self.done = -1
             if self.turn == -1:
                 self.p1_wins += 1
             else:
@@ -80,12 +109,12 @@ class Env:
             self.draw = True
             # print('repeated position')
             self.draws += 1
-            self.done=True
+            self.done=0
         # none of the players capturing any piece during their last 40 moves results in a draw
         elif self.nonprogress >= 40:
             self.draw = True
             self.draws += 1
-            self.done=True
+            self.done=0
         
         return self.done
 
@@ -198,7 +227,7 @@ class Env:
             state = state.flip(0)
 
         done = self.done
-        if done:
+        if done != 3:
             if not self.draw:
                 if self.turn == -1:
                     reward0, reward1 = -1,1
