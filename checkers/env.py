@@ -41,6 +41,25 @@ class Env:
         self.p1_wins= 0
         self.draws = 0
 
+
+    def __str__(self) -> str:
+        # format: state, nonprogress moves, number of repetitions
+        return str(self.getBoard()) + str(self.nonprogress) + str(self.positions[tuple(self.state.tolist())])
+
+    def encodeObs(self):
+        state = self.getBoard().view(8,8)
+
+        encoded = torch.zeros([6,8,8])
+
+        encoded[0,:,:][state == -1] = 1
+        encoded[1,:,:][state == -2] = 1
+        encoded[2,:,:][state == 1] = 1
+        encoded[3,:,:][state == 2] = 1
+        encoded[4,:,:] = self.positions[tuple(self.state.tolist())]
+        encoded[5,:,:] = self.nonprogress
+
+        return encoded
+
     def save(self):
         return (self.state.clone(),
                 self.turn,
@@ -54,11 +73,11 @@ class Env:
                 self.draws)
 
     def load(self, paramTuple):
-        self.state = paramTuple[0]
+        self.state = paramTuple[0].clone()
         self.turn = paramTuple[1]
         self.captureFlag = paramTuple[2]
         self.nonprogress = paramTuple[3]
-        self.positions = paramTuple[4]
+        self.positions = paramTuple[4].copy()
         self.draw = paramTuple[5]
         self.done = paramTuple[6]
         self.p0_wins = paramTuple[7]
@@ -78,7 +97,7 @@ class Env:
     def getBoard(self):
         state = self.state.clone()
         if self.turn == 1:
-            state = state.flip(0)
+            state = -state.flip(0)
         return state
     
     def get_obs(self, needMask=True):
@@ -88,9 +107,10 @@ class Env:
         if self.turn == 1:
             state = state.flip(0)
         mask = self.get_mask(self.turn)
-        done = self.isTerminated(mask) if self.done != 3 else True
+        done = self.isTerminated(mask)
+        done = False if done == 3 else True
 
-        return state, mask, done, repetitions, non_p
+        return state, mask, done
 
 
     def isTerminated(self, mask):
@@ -286,7 +306,7 @@ class Env:
             
     def render(self, orient=-1, manualAid=False):
         # reshape the state to a board form and orient it s.t. the black pieces are at the bottom
-        state, mask, done, rep, nonp = self.get_obs()
+        state, mask, done = self.get_obs()
         
         state = state.view([8,8])
         if orient == -1:

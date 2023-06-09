@@ -6,7 +6,8 @@ import torch.nn.functional as F
 class ConvBlock(nn.Module):
     def __init__(self, numChannels):
         super(ConvBlock, self).__init__()
-        self.conv1 = nn.Conv2d(numChannels, 256, [3,3], 1)
+        self.conv1 = nn.Conv2d(in_channels=numChannels, out_channels=256, kernel_size=3, stride=1,padding=1)
+        torch.nn.init.normal_(self.conv1.weight, mean=0.0, std=0.1) 
         self.bn1 = nn.BatchNorm2d(256)
 
     def forward(self, x):
@@ -19,31 +20,46 @@ class ConvBlock(nn.Module):
 class ResBlock(nn.Module):
     def __init__(self):
         super(ResBlock, self).__init__()
-        self.conv1 = nn.Conv2d(6, 256, [3,3], 1)
+        self.conv1 = nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, stride=1,padding=1)
+        torch.nn.init.normal_(self.conv1.weight, mean=0.0, std=0.1) 
         self.bn1 = nn.BatchNorm2d(256)
-        self.conv2 = nn.Conv2d(256, 256, [3,3], 1)
+        self.conv2 = nn.Conv2d(in_channels=256, out_channels=256, kernel_size=3, stride=1,padding=1)
+        torch.nn.init.normal_(self.conv2.weight, mean=0.0, std=0.1) 
         self.bn2 = nn.BatchNorm2d(256)
 
 
     def forward(self, x):
-        x = x + self.bn2(self.conv2(F.relu(self.bn1(self.conv1(x)))))
-        x = F.relu(x)
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = F.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        # print(out.size())
+        out = out + x
+        out = F.relu(out)
 
-        return x
+        return out
     
 class Heads(nn.Module):
     def __init__(self, numActions):
         super(Heads, self).__init__()
         # value
-        self.conv1 = nn.Conv2d(256,1,[1,1],1)
+        self.conv1 = nn.Conv2d(in_channels=256, out_channels=1, kernel_size=1, stride=1,padding=0)
+        torch.nn.init.normal_(self.conv1.weight, mean=0.0, std=0.1)
         self.bn1 = nn.BatchNorm2d(1)
-        self.lin1 = nn.Linear(6*256, 256)
+        self.lin1 = nn.Linear(8*8, 256)
+        torch.nn.init.normal_(self.lin1.weight, mean=0.0, std=0.1) 
         self.lin2 = nn.Linear(256,1)
+        torch.nn.init.normal_(self.lin2.weight, mean=0.0, std=0.1) 
+
 
         # policy
-        self.conv2 = nn.Conv2d(256,2,[1,1],1)
+        self.conv2 =  nn.Conv2d(in_channels=256, out_channels=2, kernel_size=1, stride=1,padding=0)
+        torch.nn.init.normal_(self.conv2.weight, mean=0.0, std=0.1) 
         self.bn2 = nn.BatchNorm2d(2)
-        self.lin3 = nn.Linear(6 * 2 * 256, numActions)
+        self.lin3 = nn.Linear(2*8*8, numActions)
+        torch.nn.init.normal_(self.lin3.weight, mean=0.0, std=0.1) 
+
 
     def forward(self, x):
         v = self.conv1(x)
@@ -60,12 +76,12 @@ class Heads(nn.Module):
         p = F.relu(p)
         p = p.flatten()
         p = self.lin3(p)
-        p = F.softmax(p)
-
+        p = F.softmax(p, dim=0)
+        
         return p, v
 
 
-class CheckersNN():
+class CheckersNN(nn.Module):
     def __init__(self, num_obs, num_actions, numResBlocks):
         super(CheckersNN, self).__init__()
         self.convBlock = ConvBlock(num_obs)
@@ -82,18 +98,4 @@ class CheckersNN():
         p,v = self.heads(x)
 
         return p,v
-
-    def encodeState(self, board, numRepetitions, nonProgress):
-        state = board.view(8,8)
-
-        encoded = torch.zeros([6,8,8])
-
-        encoded[0,:,:][state == -1] = 1
-        encoded[1,:,:][state == -2] = 1
-        encoded[2,:,:][state == 1] = 1
-        encoded[3,:,:][state == 2] = 1
-        encoded[4,:,:] = numRepetitions
-        encoded[5,:,:] = nonProgress
-
-        return encoded
     

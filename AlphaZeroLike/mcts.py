@@ -19,22 +19,28 @@ class MCTS():
 
         self.isTerminal = {}
         self.masks = {}
-
-    
-    def stateHashable(self, state):
-        return tuple(state.tolist())
     
 
     def getDistribution(self, env_params, greedy=False):
+        # discard the previous tree
+        self.N = {}
+        self.W = {}
+        self.Q = {}
+        self.P = {}
+
+        self.isTerminal = {}
+        self.masks = {}
+
         for i in range(self.sims):
             self.env.load(env_params)
             self.rollout()
 
         self.env.load(env_params)
-        state = self.env.getBoard()
-        s0 = self.stateHashable(state)
+ 
+        s0 = str(self.env)
 
-        policy = torch.pow(self.N[s0], 1/self.temperature) / torch.sum(torch.pow(self.N[s0], 1/self.temperature))
+        policy = torch.tensor(np.power(self.N[s0], 1/self.temperature) / np.sum(np.power(self.N[s0], 1/self.temperature)))
+
 
         if greedy:
             argmax = torch.argmax(policy).clone()
@@ -45,12 +51,12 @@ class MCTS():
 
 
     def rollout(self):
-        state = self.env.getBoard()
-        s = self.stateHashable(state)
+        s = str(self.env)
+
 
         # the state has been encountered for the first time
         if self.isTerminal.get(s) is None:
-            mask = self.env.get_mask(self.env.turn)
+            mask = self.env.get_mask(self.env.turn).flatten()
             isDone = self.env.isTerminated(mask)
 
             self.isTerminal[s] = isDone
@@ -62,26 +68,26 @@ class MCTS():
         else:
             # a leaf node, hasn't been explored before
             if self.P.get(s) is None:
-                with torch.no_grad:
-                    p, v = self.net(s)
-
+                with torch.no_grad():
+                    encoded = self.env.encodeObs()
+                    p, v = self.net(encoded.unsqueeze(0))
                 self.P[s] = p * mask
                 # add the noise to the distribution to regulate the exploration
                 noise = distr.Dirichlet(self.dir_noise *torch.ones_like(self.P[s])).sample()
                 # renormalize the distribution, s.t. it adds up to 1
                 self.P[s][mask] /= torch.sum(self.P[s][mask])
                 self.P[s] = (1 - self.eps) * self.P[s] + self.eps * noise
-                self.N[s] = torch.zeros_like(mask)
-                self.W[s] = torch.zeros_like(mask)
-                self.Q[s] = torch.zeros_like(mask)
+                self.N[s] = np.zeros_like(mask)
+                self.W[s] = np.zeros_like(mask)
+                self.Q[s] = np.zeros_like(mask)
 
             # not a leaf node, choose the best action w.r.t. PUCT algorithm
             else:
-                U = self.c_puct * self.P[s] * torch.sqrt(torch.sum(self.N[s])) / (1 + self.N[s])
+                U = self.c_puct * self.P[s] * np.sqrt(np.sum(self.N[s])) / (1 + self.N[s])
                 action_values = U + self.Q[s]
                 action_values[~self.masks[s]] = -torch.inf
 
-                a = torch.argmax(action_values)
+                a = np.argmax(action_values)
                 turn = self.env.turn
                 # take the action a and update the state
                 self.env.step_env(a)
@@ -92,8 +98,8 @@ class MCTS():
                 else:
                     v = self.rollout()
 
-            self.N[s][a] += 1
-            self.W[s][a] += v
-            self.Q[s][a] = self.W[s][a] / self.N[s][a]
+                self.N[s][a] += 1
+                self.W[s][a] += v
+                self.Q[s][a] = self.W[s][a] / self.N[s][a]
 
             return v
