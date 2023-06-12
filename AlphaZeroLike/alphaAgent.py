@@ -63,6 +63,7 @@ class AlphaAgent():
         self.mem = ReplayMemory()
 
     def move(self, probs):
+        # print(probs)
         m = distr.Categorical(probs)
         return m.sample()
 
@@ -77,14 +78,15 @@ class AlphaAgent():
             # the main episode loop
             while True:
                     S_prime, mask, isTerminated = self.env.get_obs()
-                    self.env.render(orient=self.env.turn)
+                    # self.env.render(orient=self.env.turn)
                     # print(isTerminated)
                     if isTerminated:
                         R, R_2 = self.env.step_env(None)
-                        i_result[i_result == -1] = R
-                        i_result[i_result == 1] = R_2
+                        i_result = [R if x == -1 else R_2 for x in i_result]
                         i_buffer = list(zip(i_states, i_probs, i_result))
                         self.mem.extend(i_buffer)
+                        self.env.render(orient=self.env.turn)
+
                         break
 
                     else:
@@ -111,7 +113,7 @@ class AlphaAgent():
 def main():
     game_inst = env.Env()
     agent = AlphaAgent(game_inst, 6,512,1)
-    agent.selfplay(1,10, 1, 1, 0.3, 0.25)
+    agent.selfplay(10,10, 1, 1, 0.3, 0.25)
 
 
 

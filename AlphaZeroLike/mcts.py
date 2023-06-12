@@ -32,15 +32,14 @@ class MCTS():
         self.masks = {}
 
         for i in range(self.sims):
-            self.env.load(env_params)
             self.rollout()
-
-        self.env.load(env_params)
+            self.env.load(env_params)
+           
  
         s0 = str(self.env)
 
         policy = torch.tensor(np.power(self.N[s0], 1/self.temperature) / np.sum(np.power(self.N[s0], 1/self.temperature)))
-
+        
 
         if greedy:
             argmax = torch.argmax(policy).clone()
@@ -71,15 +70,18 @@ class MCTS():
                 with torch.no_grad():
                     encoded = self.env.encodeObs()
                     p, v = self.net(encoded.unsqueeze(0))
-                self.P[s] = p * mask
+                self.P[s] = p
+    
                 # add the noise to the distribution to regulate the exploration
                 noise = distr.Dirichlet(self.dir_noise *torch.ones_like(self.P[s])).sample()
-                # renormalize the distribution, s.t. it adds up to 1
-                self.P[s][mask] /= torch.sum(self.P[s][mask])
-                self.P[s] = (1 - self.eps) * self.P[s] + self.eps * noise
-                self.N[s] = np.zeros_like(mask)
-                self.W[s] = np.zeros_like(mask)
-                self.Q[s] = np.zeros_like(mask)
+               
+
+                self.P[s] = ((1 - self.eps) * self.P[s] + self.eps * noise) * mask
+                self.P[s] /= torch.sum(self.P[s])
+                # print(torch.sum(self.P[s]))
+                self.N[s] = np.zeros_like(mask, dtype=float)
+                self.W[s] = np.zeros_like(mask, dtype=float)
+                self.Q[s] = np.zeros_like(mask, dtype=float)
 
             # not a leaf node, choose the best action w.r.t. PUCT algorithm
             else:

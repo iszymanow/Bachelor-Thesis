@@ -246,8 +246,7 @@ class Env:
         if self.turn == 1:
             state = state.flip(0)
 
-        done = self.done
-        if done != 3:
+        if self.done != 3:
             if not self.draw:
                 if self.turn == -1:
                     reward0, reward1 = -1,1
@@ -330,7 +329,7 @@ class Env:
 
         if manualAid:
             actions = {}
-            aid = board + "number of repetitions of the position: " + str(rep) + "\nnumber of non-progress moves: " + str(nonp * 2) + "\nSquares with pieces that you can move:\n+---+---+---+---+---+---+---+---+\n"
+            aid = board + "\nSquares with pieces that you can move:\n+---+---+---+---+---+---+---+---+\n"
             for i in range(state.size()[0]):
                 i = 7 - i
                 aid += '|'

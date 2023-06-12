@@ -46,7 +46,7 @@ def play(agent, game_inst, numEpisodes, numGames):
 
         # the main episode loop
         while True:
-                S_prime, mask, isTerminated, repetitions, nonprogress = game_inst.get_obs()
+                S_prime, mask, isTerminated = game_inst.get_obs()
                 mask = mask.flatten()
 
                 if isTerminated:
@@ -55,7 +55,7 @@ def play(agent, game_inst, numEpisodes, numGames):
                     agent.step_agent(curr_state_p1, A_2p, torch.zeros([64*5]), R_2, mask, isTerminated, 1)                       
                     break
 
-                S_prime = encodeObs(S_prime, repetitions, nonprogress, game_inst.turn)
+                S_prime = encodeObs(S_prime, game_inst.turn)
                 
                 if game_inst.turn == -1:
                     A_p = agent.step_agent(curr_state_p0, A_p, S_prime, R, mask, isTerminated, -1)
@@ -80,15 +80,15 @@ def trainDistributed(eval_frequency, numEpisodes, num_workers, weights_path='', 
                     gamma=0.999, 
                     eps_start=1, 
                     eps_end = 0.1, 
-                    eps_decay=25000, 
-                    opt_lr=1e-4, 
+                    eps_decay=8e6, 
+                    opt_lr=1e-3, 
                     batch_size=256, 
                     tau=5e-6,
                     softUpdates=True)
     
-    weights = torch.load('distrRun/DQNAgent_3_hidden_layers.pt')
-    agent.behavior_net.load_state_dict(weights)
-    agent.target_net.load_state_dict(weights)
+    # weights = torch.load('distrRun/DQNAgent_3_hidden_layers.pt')
+    # agent.behavior_net.load_state_dict(weights)
+    # agent.target_net.load_state_dict(weights)
 
     
     randomS_p0_wins, randomS_draws, randomS_p1_wins = [],[],[]
@@ -212,7 +212,7 @@ def trainDistributed(eval_frequency, numEpisodes, num_workers, weights_path='', 
         for p in work:
             p.join()
 
-        torch.save(agent.target_net.state_dict(), weights_path + '/DQNAgent_150k_3_hidden_layers.pt')
+        torch.save(agent.target_net.state_dict(), weights_path + '/DQNAgent_100k_1_hidden_layer_1024units.pt')
         print("TRAIN: Training finished, the target weights have been saved at " + weights_path + ".")
 
 def trainDeepQN(eval_frequency, numEpisodes, weights_path='', loss_plots_path='', result_plots_path=''):
@@ -318,14 +318,6 @@ def trainDeepQN(eval_frequency, numEpisodes, weights_path='', loss_plots_path=''
                         #environment step
                         R,R_2 = game_inst.step_env(A_2p.to(device))
 
-
-
-
-                    # game_inst.render(orient=game_inst.turn)
-                    # ensure the loop iterates two more times after the game is finished,
-                    # so that last updates are performed for both p0 and p1
-
-
             # Progress tracking and evaluation part
             if i % eval_frequency == 0:
                 p0_batch_win_ratio = p0_curr_wins / eval_frequency * 100
@@ -407,7 +399,7 @@ def trainDeepQN(eval_frequency, numEpisodes, weights_path='', loss_plots_path=''
                     plt.ylabel("number of games with particular outcome during eval. run")
                     plt.title("Results against a random player that plays as second (rand = p1)")
 
-                    plt.savefig(result_plots_path + "/results_after_" + str(200000+i) + "_iters")
+                    plt.savefig(result_plots_path + "/results_after_" + str(i) + "_iters")
                     plt.close()
 
                     # # stacked bar charts
@@ -447,7 +439,7 @@ def trainDeepQN(eval_frequency, numEpisodes, weights_path='', loss_plots_path=''
                     torch.save(p0.target_net.state_dict(), weights_path + '/DQNAgent.pt')
 
 
-    torch.save(p0.target_net.state_dict(), weights_path + '/DQNAgent200k.pt')
+    torch.save(p0.target_net.state_dict(), weights_path + '/DQNAgent_1024units_1hiddenlayer.pt')
     print("TRAIN: Training finished, the target weights have been saved at " + weights_path + ".")
 
 def testSelfPlay(net, in_obs, out_actions, numEpisodes=1000):
@@ -648,8 +640,8 @@ def main():
     # manualTestPlay(weights)
 
     trainDistributed(eval_frequency=5000,
-                numEpisodes=50000,
-                num_workers=2,
+                numEpisodes=100000,
+                num_workers=4,
                 weights_path='distrRun',
                 loss_plots_path='distrRun/losses',
                 result_plots_path='distrRun/results')
