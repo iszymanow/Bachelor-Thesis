@@ -3,8 +3,10 @@ import torch.optim as optim
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributions as distr
+import torch.multiprocessing as mp
 import random
 from collections import namedtuple, deque
+import numpy as np
 
 from mcts import MCTS
 from neuralNets import CheckersNN
@@ -61,6 +63,9 @@ class AlphaAgent():
         self.env = env
         self.net = CheckersNN(numObs, numActions, numResBlocks)
         self.mem = ReplayMemory()
+        self.optimizer = optim.Adam(self.net.parameters(), lr=1e-3, amsgrad=True)
+        self.losses = []
+
 
     def move(self, probs):
         # print(probs)
@@ -74,6 +79,7 @@ class AlphaAgent():
         for i in tqdm(range(numGames)):
             i_states, i_probs, i_result = [], [], []
             self.env.reset()
+            numMoves = 0
 
             # the main episode loop
             while True:
@@ -90,6 +96,9 @@ class AlphaAgent():
                         break
 
                     else:
+                        numMoves += 0.5
+                        if numMoves > 30:
+                            mcts.temperature = 1/numMoves
                         params = self.env.save()
                         s = str(self.env)
                         probs = mcts.getDistribution(params)
@@ -108,12 +117,103 @@ class AlphaAgent():
                " draws: " + str(self.env.draws))
 
 
+    def train(self, minibatch):
+        if self.mem.__len__() < minibatch:
+            return
+        else:
+            self.net.train()
+            data = self.mem.sample()
+            
+            batch = dataSample(*zip(*data))
+
+            s_batch = torch.cat(batch.s_t)
+            target_pi = torch.cat(batch.pi_t)
+            target_v = torch.cat(batch.z_t)
+
+            output_pi, output_v = self.net(s_batch)
+
+            criterion = CustomLoss(model=self.net, reg=1)
+            loss = criterion(output_v, output_pi, target_v, target_pi)
+            self.losses.append(loss.item())
+
+            self.optimizer.zero_grad()
+            loss.backward()
+
+            self.optimizer.step()
+
+
+    def evaluate(self, challengerNet, numGames, thinkingTime):
+        game_inst = self.env
+        self.net.eval()
+        challengerNet.eval()
+        p0 = MCTS(game_inst, self.net, thinkingTime, 0.001 ,1, 0, 0)
+        p1 = MCTS(game_inst, challengerNet, thinkingTime, 0.001 ,1, 0, 0)
+        whoStarts = []
+        agentWins = 0
+        challengerWins = 0
+        draws = 0
+
+        for i in tqdm(range(numGames)):
+            game_inst.reset()
+            start = np.random.choice([-1,1])
+            whoStarts.append(start)
+
+            while True:
+                    S_prime, mask, isTerminated = self.env.get_obs()
+                    # self.env.render(orient=self.env.turn)
+                    # print(isTerminated)
+                    if isTerminated:
+                        R, R_2 = self.env.step_env(None)
+                        if whoStarts[i] == -1:
+                            if R == 1:
+                                agentWins += 1
+                            elif R == -1:
+                                challengerWins += 1
+                            else:
+                                draws += 1
+                        else:
+                            if R == 1:
+                                challengerWins += 1
+                            elif R == -1:
+                                agentWins += 1
+                            else:
+                                draws += 1
+                        break
+
+                    else:
+                        params = self.env.save()
+                        if game_inst.turn == -1:
+                            if whoStarts == -1:
+                                probs = p0.getDistribution(params, greedy=True)
+                            else:
+                                probs = p1.getDistribution(params, greedy=True)
+                        else:
+                            if whoStarts == -1:
+                                probs = p1.getDistribution(params, greedy=True)
+                            else:
+                                probs = p0.getDistribution(params, greedy=True)
+
+                        A = self.move(probs)
+
+                        self.env.step_env(A)
+
+        print("agent's wins: " + str(agentWins) + ", draws: " + str(draws) + ", challenger's wins: " + str(challengerWins))
+
+    def mainLoop(self):
+        for i in tqdm(range(10)):
+            state_dict = self.net.state_dict().copy()
+            self.selfplay(1028,100, 1, 1, 0.3, 0.25)
+            for j in tqdm(range(100)):
+                self.train(32)
+            challenger = CheckersNN(6,512,1)
+            challenger.load_state_dict(state_dict)
+            self.evaluate(challenger, 400, 400)
 
 
 def main():
     game_inst = env.Env()
     agent = AlphaAgent(game_inst, 6,512,1)
-    agent.selfplay(10,10, 1, 1, 0.3, 0.25)
+    agent.mainLoop()
 
 
 
