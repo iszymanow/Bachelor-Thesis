@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-import multiprocessing, concurrent.futures
+import copy
 
 # device = 'cuda' if torch.cuda.is_available() else 'cpu'
 device='cpu'
@@ -25,11 +25,11 @@ class Env:
         """
         self.turn=-1
         
-        row0 = torch.tensor([1, 0, 1, 0, 1, 0, 1, 0], dtype=torch.int8, device=device)
-        row1 = torch.tensor([0, 1, 0, 1, 0, 1, 0, 1], dtype=torch.int8, device=device)
-        rowBlank = torch.zeros(size=[8], dtype=torch.int8, device=device)
+        row0 = np.array([1, 0, 1, 0, 1, 0, 1, 0], dtype=np.int8)
+        row1 = np.array([0, 1, 0, 1, 0, 1, 0, 1], dtype=np.int8)
+        rowBlank = np.zeros(shape=(8,), dtype=np.int8)
 
-        self.state = torch.cat([-row0, -row1, -row0, rowBlank, rowBlank, row1, row0, row1])
+        self.state = np.concatenate([-row0, -row1, -row0, rowBlank, rowBlank, row1, row0, row1])
         self.captureFlag = -1
         self.nonprogress = 0
         self.positions = {tuple(self.state.tolist()): 1}
@@ -47,9 +47,8 @@ class Env:
         return str(self.getBoard()) + str(self.nonprogress) + str(self.positions[tuple(self.state.tolist())])
 
     def encodeObs(self):
-        state = self.getBoard().view(8,8)
-
-        encoded = torch.zeros([6,8,8])
+        state = self.getBoard().reshape((8,8,))
+        encoded = np.zeros([6,8,8])
 
         encoded[0,:,:][state == -1] = 1
         encoded[1,:,:][state == -2] = 1
@@ -58,31 +57,11 @@ class Env:
         encoded[4,:,:] = self.positions[tuple(self.state.tolist())]
         encoded[5,:,:] = self.nonprogress
 
-        return encoded
+        return torch.tensor(encoded, dtype=torch.float)
 
     def save(self):
-        return (self.state.clone(),
-                self.turn,
-                self.captureFlag,
-                self.nonprogress,
-                self.positions.copy(),
-                self.draw,
-                self.done,
-                self.p0_wins,
-                self.p1_wins,
-                self.draws)
+        return copy.deepcopy(self)
 
-    def load(self, paramTuple):
-        self.state = paramTuple[0].clone()
-        self.turn = paramTuple[1]
-        self.captureFlag = paramTuple[2]
-        self.nonprogress = paramTuple[3]
-        self.positions = paramTuple[4].copy()
-        self.draw = paramTuple[5]
-        self.done = paramTuple[6]
-        self.p0_wins = paramTuple[7]
-        self.p1_wins = paramTuple[8]
-        self.draws = paramTuple[9]
 
     def reset(self):
         curr_p0_wins = self.p0_wins
@@ -95,17 +74,17 @@ class Env:
         self.draws = curr_draws
 
     def getBoard(self):
-        state = self.state.clone()
+        state = self.state.copy()
         if self.turn == 1:
-            state = -state.flip(0)
+            state = -np.flip(state,0)
         return state
     
     def get_obs(self, needMask=True):
-        state = self.state.clone()
+        state = self.state.copy()
         repetitions = self.positions[tuple(state.tolist())]
         non_p = self.nonprogress
         if self.turn == 1:
-            state = state.flip(0)
+            state = np.flip(state,0)
         mask = self.get_mask(self.turn)
         done = self.isTerminated(mask)
         done = False if done == 3 else True
@@ -150,7 +129,7 @@ class Env:
         # 6 - right backward (king)
         # 7 - right_back capture (king)
 
-        board = self.state.view([8,8])
+        board = self.state.reshape((8,8,))
         # print(self.turn, board)
         
         # flip the board in case it's white's move
@@ -163,10 +142,10 @@ class Env:
         # mask = torch.stack([future.result() for future in futures])
 
         if self.captureFlag != -1:
-            mask = torch.zeros([64,8], dtype=torch.bool)
+            mask = np.zeros([64,8], dtype=bool)
             mask[self.captureFlag] = self.checkOptions(board, player, self.captureFlag//8, self.captureFlag%8)
         else:
-            mask = torch.stack([self.checkOptions(board, player, i, j) for i in range(8) for j in range(8)])
+            mask = np.stack([self.checkOptions(board, player, i, j) for i in range(8) for j in range(8)])
 
         if mask[:,1::2].any():
             mask[:,::2] = False
@@ -175,7 +154,7 @@ class Env:
     
 
     def checkOptions(self, board, player, i, j):
-        mask = torch.zeros([8], dtype=torch.bool)
+        mask = np.zeros([8], dtype=bool)
         if (i%2 + j) % 2 != 0:
             return mask
         if board[i][j] * player > 0:
@@ -227,7 +206,7 @@ class Env:
         action = action.squeeze()
         move = action % 8
         start = (action - move)//8
-        numSquares = torch.tensor([7,14,9,18,-9,-18,-7,-14], device=device, dtype=torch.int8)
+        numSquares = np.array([7,14,9,18,-9,-18,-7,-14], dtype=np.int8)
         # if self.turn == 1:
         #     numSquares *= (-1)
         #     start = 63 - start
@@ -235,7 +214,7 @@ class Env:
 
 
     def flip_board(self, board):
-        return board.flip(1).flip(0)
+        return np.flip(np.flip(board,1),0)
                 
 
     def step_env(self, action):
@@ -244,7 +223,7 @@ class Env:
         self.captureFlag = -1
         state = self.state
         if self.turn == 1:
-            state = state.flip(0)
+            state = np.flip(state,0)
 
         if self.done != 3:
             if not self.draw:
@@ -278,9 +257,9 @@ class Env:
                 promotion = True
                 state[end] *= 2
 
-            capture_mask = self.checkOptions(state.view(8,8), self.turn, end//8, end%8)
+            capture_mask = self.checkOptions(state.reshape((8,8,)), self.turn, end//8, end%8)
             if self.turn == 1:
-                state = state.flip(0)
+                state = np.flip(state,0)
 
             key = tuple(state.tolist())
             if self.positions.get(key) is None:
@@ -305,12 +284,12 @@ class Env:
             
     def render(self, orient=-1, manualAid=False):
         # reshape the state to a board form and orient it s.t. the black pieces are at the bottom
-        state, mask, done = self.get_obs()
+      
         
-        state = state.view([8,8])
+        state = self.state.reshape((8,8,))
         if orient == -1:
           state = self.flip_board(state)
-        state = state.flip(0)
+        state = np.flip(state,0)
         board = "\n+---+---+---+---+---+---+---+---+\n"
         for row in state:
             board += '|'
@@ -328,12 +307,13 @@ class Env:
             board += "\n+---+---+---+---+---+---+---+---+\n"
 
         if manualAid:
+            mask = self.get_mask(self.turn)
             actions = {}
             aid = board + "\nSquares with pieces that you can move:\n+---+---+---+---+---+---+---+---+\n"
-            for i in range(state.size()[0]):
+            for i in range(state.shape[0]):
                 i = 7 - i
                 aid += '|'
-                for j in range(state.size()[1]):
+                for j in range(state.shape[1]):
                     # j = 7 - j
                     if (i + j) % 2 == 0 and mask[8*i + j].any():
                         actions[8*i+j] = [index for index in range(len(mask[8*i + j])) if mask[8*i+j][index]]

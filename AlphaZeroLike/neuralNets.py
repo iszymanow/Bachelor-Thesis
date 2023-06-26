@@ -14,7 +14,7 @@ class ConvBlock(nn.Module):
         x = self.conv1(x)
         x = self.bn1(x)
         x = F.relu(x)
-
+        # print(x)
         return x
     
 class ResBlock(nn.Module):
@@ -34,7 +34,6 @@ class ResBlock(nn.Module):
         out = F.relu(out)
         out = self.conv2(out)
         out = self.bn2(out)
-        # print(out.size())
         out = out + x
         out = F.relu(out)
 
@@ -65,7 +64,7 @@ class Heads(nn.Module):
         v = self.conv1(x)
         v = self.bn1(v)
         v = F.relu(v)
-        v = v.flatten()
+        v = v.view(-1,8*8)
         v = self.lin1(v)
         v = F.relu(v)
         v = self.lin2(v)
@@ -74,9 +73,9 @@ class Heads(nn.Module):
         p = self.conv2(x)
         p = self.bn2(p)
         p = F.relu(p)
-        p = p.flatten()
+        p = p.view(-1,8*8*2)
         p = self.lin3(p)
-        p = F.softmax(p, dim=0)
+        p = F.softmax(p, dim=1)
         
         return p, v
 
