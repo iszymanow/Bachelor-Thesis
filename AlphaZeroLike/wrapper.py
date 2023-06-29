@@ -1,135 +1,109 @@
 import torch
-import torch.optim as optim
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.distributions as distr
 import torch.multiprocessing as mp
-import random
-from collections import namedtuple, deque
 import numpy as np
-
-from mcts import MCTS
-from neuralNets import CheckersNN
-import sys
-from tqdm import tqdm
 from alphaAgent import AlphaAgent
+import neuralNets
 import copy
 
-#pc:
-sys.path.append('/home/igor/Bachelor-Thesis/checkers/')
 import env
+import envTicTacToe
 
 
 
 
-def trainDistributed(numWorkers, numGames, eval_frequency):
-
-    
+def trainDistributed(net, env, numCPUs, numGPUs, numGames, eval_frequency, evalGames, checkpoints_path):
     if __name__ == '__main__':
-        game_inst = env.Env()
-        agent = AlphaAgent(game_inst, 6,512,1)
-        mp.set_start_method('spawn')
+        game_inst = env
+        agent = AlphaAgent(game_inst, net)
+        # agent.net = torch.load(checkpoints_path +"/checkpoint_10.pt")
+        mp.set_start_method('spawn') 
         agent.net.share_memory()
         agent.losses = mp.Manager().list(agent.losses)
-        thinkingTime = 100
-        temp = 1
-        c_puct = 1
+        thinkingTime = 40
+        c_init = 1.25
+        c_base = 19652
         dir_noise = 0.3
         eps = 0.25
-        minibatch = 32
-        val = mp.Value('i', 0)
+        minibatch = 128
 
-        torch.save(agent.net, "challenger.pt")
+        torch.save(agent.net, checkpoints_path + "/challenger.pt")
 
         
 
-        barrier = mp.Barrier(numWorkers)
+        barrier = mp.Barrier(numCPUs)
         results = mp.Manager().dict()
-        evalGames = 100
-        evalThinkingTime = 50
+        iterations = numGames//eval_frequency
+        evalGamesPerWorkerPerIter = evalGames//numCPUs
+        evalThinkingTime = 40
 
-
-        work = [mp.Process(target=wrapper, args=("challenger.pt",agent,numWorkers, eval_frequency//numWorkers, thinkingTime, temp, c_puct, dir_noise, eps,val,barrier,minibatch, evalGames//numWorkers, evalThinkingTime, results, i)) for i in range(numWorkers)]
+       
+        work = [mp.Process(target=wrapper,args = (checkpoints_path,checkpoints_path + "/challenger.pt",agent,iterations,eval_frequency//numCPUs,thinkingTime,c_init,c_base,dir_noise,eps,barrier,minibatch,evalGamesPerWorkerPerIter,evalThinkingTime,results,i,numGPUs)) for i in range(numCPUs)]
 
         for p in work:
             p.start()
 
-        # i = 0
-        # while True:
-        #     with val.get_lock():
-                
-        #         if val.value == (i+1) * eval_frequency:
-                    
-
-        #             # results = mp.Manager().dict()
-        #             # evalGames = 100
-        #             # evalThinkingTime = 8
-        #             # chal = torch.load('challenger.pt')
-        #             # eval_work = [mp.Process(target=agent.evaluate, args=(chal, evalGames/numWorkers, evalThinkingTime, results, j,)) for j in range(numWorkers)]
-        #             # for p in eval_work:
-        #             #     p.start()
-
-        #             # for p in eval_work:
-        #             #     p.join()
-        #             barrier.wait()
-        #             agentWins = 0
-        #             draws = 0
-        #             challengerWins = 0
-        #             for j in range(len(work)):
-        #                 agentWins += results[j][0]
-        #                 draws += results[j][1]
-        #                 challengerWins += results[j][2]
-                    
-        #             print("agent's wins: " + str(agentWins) + ", draws: " + str(draws) + ", challenger's wins: " + str(challengerWins))
-
-        #             if agentWins/(agentWins + draws + challengerWins) > 0.55:
-        #                 print("new challenger!")
-        #                 torch.save(agent.net, "challenger.pt")
-        #             else:
-        #                 agent.net = torch.load("challenger.pt")
-
-        #             i += 1
-        #     if (i+1) * eval_frequency > numGames:
-        #         break
+        
         for p in work:
             p.join()
 
-def wrapper(selfplay_agent_path, train_agent, iterations, local_eval_frequency, thinking_time, temp,c_puct, dir_noise, eps, lock, barrier, minibatch, evalGames, evalThinkingTime, results, idx):
-        for i in range(iterations):
-            # obtain a copy for selfplay
-            selfplay_agent = AlphaAgent(train_agent.env,6,512,1)
-            selfplay_agent.net = copy.deepcopy(train_agent.net)
-            selfplay_agent = copy.deepcopy(train_agent)
-            selfplay_agent.net = torch.load(selfplay_agent_path)
-            # move the transition tuples to the training agent
-            train_agent.mem.memory = selfplay_agent.mem.memory
-            selfplay_agent.selfplay(local_eval_frequency, thinking_time, temp, c_puct, dir_noise, eps, lock)
-            train_agent.train(1000, minibatch)
+        torch.save(agent.net, checkpoints_path + "/final_version.pt")
 
-            barrier.wait()
+def wrapper(ckpt_path, selfplay_agent_path, train_agent, iterations, local_eval_frequency, thinking_time, c_init,c_base, dir_noise, eps, barrier, minibatch, evalGames, evalThinkingTime, results, idx, numGPUs):
+    for i in range(iterations):
+        # obtain a copy for selfplay
+        dev = 'cuda:' + str(idx % numGPUs)
+        selfplay_agent = copy.copy(train_agent)
+        selfplay_agent.env.p0_wins = 0
+        selfplay_agent.env.p1_wins = 0
+        selfplay_agent.env.draws = 0
+
+
+        selfplay_agent.net = torch.load(selfplay_agent_path)
+        # move the transition tuples to the training agent
+        selfplay_agent.selfplay(local_eval_frequency, thinking_time, c_init, c_base, dir_noise, eps)
+
+
+        train_agent.mem.memory = selfplay_agent.mem.memory
+        train_agent.train(50, minibatch)
+
+        # wait until all processes finished training the network before evaluating it
+        barrier.wait()
+        # print(len(train_agent.mem))
+
+
+        train_agent.evaluate(selfplay_agent.net, evalGames, evalThinkingTime, results, idx)
+        
+        # wait until all processes finished evaluating, so that one process can collect the results
+        barrier.wait()
+
+        if idx == 0:
+            torch.save(train_agent.net, ckpt_path + "/checkpoint_" + str(i) + ".pt")
             print(np.mean(train_agent.losses))
+            agentWins = 0
+            draws = 0
+            challengerWins = 0
+            for j in range(len(results)):
+                agentWins += results[j][0]
+                draws += results[j][1]
+                challengerWins += results[j][2]
 
-            train_agent.evaluate(selfplay_agent.net, evalGames, evalThinkingTime, results, idx)
-            barrier.wait()
-            if idx == 0:
-                agentWins = 0
-                draws = 0
-                challengerWins = 0
-                for j in range(len(results)):
-                    agentWins += results[j][0]
-                    draws += results[j][1]
-                    challengerWins += results[j][2]
+            print("agent's wins: " + str(agentWins) + ", draws: " + str(draws) + ", challenger's wins: " + str(challengerWins))
+            if (agentWins)/(agentWins + challengerWins + 1e-6) > 0.55:
+                print("new challenger! checkpoint: " + str(i))
+                torch.save(train_agent.net, selfplay_agent_path)
+            else:
+                train_agent.net.load_state_dict(selfplay_agent.net.state_dict())
 
-                print("agent's wins: " + str(agentWins) + ", draws: " + str(draws) + ", challenger's wins: " + str(challengerWins))
-                if agentWins/(agentWins + draws + challengerWins) > 0.55:
-                    print("new challenger!")
-                    torch.save(train_agent.net, selfplay_agent_path)
-                else:
-                    train_agent.net = selfplay_agent.net
-            barrier.wait()
+        # wait until the selfplay & training agents for the next iteration are chosen and saved
+        barrier.wait()
             
             
 def main():
-    trainDistributed(20,10000, 1000)
+    checkersNet = neuralNets.CheckersNN(11)
+    tictactoeNet = neuralNets.TicTacToeNN(1)
+    envTic = envTicTacToe.Env()
+    envCheck = env.Env()
+    # trainDistributed(tictactoeNet, envTic, 20, 1, 10000, 1000, 100, "checkpoints_tictactoe")
+    trainDistributed(checkersNet, envCheck, 10, 1, 10000, 500, 100, "checkpoints_checkers")
 
 main()
