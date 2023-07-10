@@ -46,7 +46,7 @@ class ReplayMemory(object):
     """ 
     The implementation of Experience Replay buffer which stores the update transition. The default size is 10000 transitions
     """
-    def __init__(self, capacity=8000):
+    def __init__(self, capacity=4096):
         self.memory = []
         self.game_length = deque()
         self.game_ctr = 0
@@ -77,7 +77,7 @@ class AlphaAgent():
         self.env = env
         self.net = net.to(device)
         self.mem = ReplayMemory()
-        self.optimizer = optim.Adam(self.net.parameters(), lr=1e-2, amsgrad=False)
+        self.optimizer = optim.Adam(self.net.parameters(), lr=1e-3, amsgrad=False)
         self.criterion = CustomLoss(model=self.net, reg=1e-4)
         self.losses = []
 
@@ -125,9 +125,9 @@ class AlphaAgent():
         
 
 
-        print("p0 wins: " + str(self.env.p0_wins) + 
-               " draws: " + str(self.env.draws) +
-               " p1 wins: " + str(self.env.p1_wins))
+        # print("p0 wins: " + str(self.env.p0_wins) + 
+        #        " draws: " + str(self.env.draws) +
+        #        " p1 wins: " + str(self.env.p1_wins))
         
 
 
@@ -181,7 +181,7 @@ class AlphaAgent():
                     S_prime, mask, isTerminated = game_inst.get_obs()
                     # print(isTerminated)
                     if isTerminated:
-                        game_inst.render()
+                        # game_inst.render()
 
                         R, R_2 = game_inst.step_env(None)
                         if start == -1:
@@ -225,7 +225,7 @@ class AlphaAgent():
                         game_inst.step_env(A)
 
         results[idx] = [agentWins, draws, challengerWins]
-        print("agent's wins: " + str(agentWins) + ", draws: " + str(draws) + ", challenger's wins: " + str(challengerWins))
+        # print("agent's wins: " + str(agentWins) + ", draws: " + str(draws) + ", challenger's wins: " + str(challengerWins))
 
     def mainLoop(self):
         challenger = copy.deepcopy(self.net)
@@ -345,28 +345,39 @@ def main():
     # ticAgent.mainLoop()
     # ticAgent.evaluate(ticNet, 10, 100,dict(),0)
     check_env = env.Env()
-    checkNet = CheckersNN(1)
+    checkNet = torch.load('checkpoints_checkers_32k_30sims/checkpoint_15.pt')
     checkAgent = AlphaAgent(check_env, checkNet)
     checkAgent.mainLoop()
-    # testPos = np.array(
-        # [0,  0,  0,  0,  0,  0,  0,  0,
-        #  0,  0,  0, -2,  0,  0,  0,  0,
-        #  0,  0,  0,  0,  0,  0,  0,  0,
-        #  0,  0,  0,  1,  0,  0,  0,  0,
-        #  1,  0,  1,  0,  1,  0,  0,  0,
-        #  0,  0,  0,  0,  0,  0,  0,  0, 
-        #  0,  0,  0,  0,  0,  0,  0,  0,
-        #  0,  0,  0,  0,  0,  1,  0,  0])
+    # testPos =-1* np.array(
+    #     # [0,  0,  0,  0,  0,  0,  0,  0,
+    #     #  0,  0,  0, -2,  0,  0,  0,  0,
+    #     #  0,  0,  0,  0,  0,  0,  0,  0,
+    #     #  0,  0,  0,  1,  0,  0,  0,  0,
+    #     #  1,  0,  1,  0,  1,  0,  0,  0,
+    #     #  0,  0,  0,  0,  0,  0,  0,  0, 
+    #     #  0,  0,  0,  0,  0,  0,  0,  0,
+    #     #  0,  0,  0,  0,  0,  1,  0,  0])
+    #     [ 0,  0,  1,  0,  0,  0,  0,  0,
+    #       0,  0,  0,  2,  0,  0,  0,  0,
+    #      -2,  0,  0,  0,  0,  0,  0,  0,
+    #       0,  0,  0,  1,  0,  0,  0,  0,
+    #       0,  0,  0,  0,  0,  0,  0,  0,
+    #       0,  0,  0,  1,  0,  0,  0,  0,
+    #       0 , 0, -1,  0, -1,  0,  0,  0,
+    #       0,  0,  0,  0,  0,  0,  0,  0])
     # print(testPos.shape)
     # print(check_env.state.shape)
     # check_env.turn = 1
     # game_inst.state = testPos
     # check_env.state = testPos
     # check_env.positions[tuple(testPos.tolist())] = 0
+    # check_env.render()
 
-    # mcts = MCTS(check_env, checkNet, 50, 1.25, 19265, 0.25, 0)
+    # mcts = MCTS(check_env, checkNet, 50, 1.25, 19265, 0.3, 0.35)
     # probs = mcts.getDistribution(check_env, greedy=True)
     # check_env.step_env(mcts.move(probs))
     # check_env.render()
+
+
 
 # main()

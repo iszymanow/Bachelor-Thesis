@@ -287,7 +287,7 @@ class Env:
       
         
         state = self.state.reshape((8,8,))
-        if orient == -1:
+        if orient == 1:
           state = self.flip_board(state)
         state = np.flip(state,0)
         board = "\n+---+---+---+---+---+---+---+---+\n"

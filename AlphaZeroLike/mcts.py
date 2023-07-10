@@ -57,10 +57,11 @@ class MCTS():
         # print("N:",self.N[s0][self.masks[s0]])
         # print("Q:",self.Q[s0][self.masks[s0]])
         # print("W:",self.W[s0][self.masks[s0]])
+        # print("v: ", v)
         # print('\n\n')
         assert(s0 == str(self.env))
 
-
+        
         policy = self.N[s0] / np.sum(self.N[s0])
         # print("dream policy:", policy[self.masks[s0]])
         
@@ -102,22 +103,19 @@ class MCTS():
                     p, v = self.net(encoded.unsqueeze(0))
                 self.P[s] = p.cpu().numpy().reshape(-1)
 
-                # print("p:",p)
                 # print("new position", v)
     
                 # add the noise to the distribution to regulate the exploration
-                noise = np.random.dirichlet([self.dir_noise] * len(self.P[s]))
-                # print(noise.max())
+                noise = np.random.dirichlet([self.dir_noise] * len(self.P[s][self.masks[s]]))
+                # print(noise)
                 # print("before adding noise:",self.P[s][self.masks[s]])
-                self.P[s] = ((1 - self.eps) * self.P[s] + self.eps * noise)
+                self.P[s][self.masks[s]] = ((1 - self.eps) * self.P[s][self.masks[s]] + self.eps * noise)
                 self.P[s] *= self.masks[s]
-                
-                if np.sum(self.P[s]) == 0:
-                    print("bad eval!")
-                    self.P[s][self.masks[s]] = 1
+                # print("after adding noise",self.P[s][self.masks[s]])
+            
 
                 self.P[s] /= np.sum(self.P[s])
-                # print("after adding noise",self.P[s][self.masks[s]])
+
 
                 
                 
@@ -152,14 +150,11 @@ class MCTS():
                     # print("as opponent")
                     # the other player is on the move, we need to negate their v value 
                     v = -self.rollout()
-                    self.W[s][a] += v
+
                 else:
                     v = self.rollout()
-                    self.W[s][a] -= v
-                    # print("as same player")
-
                 self.N[s][a] += 1
-                # self.W[s][a] += v
+                self.W[s][a] += v
                 self.Q[s][a] = self.W[s][a] / self.N[s][a]
 
             # print(v)
